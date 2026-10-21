@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     container: rocker/verse:4.4.1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install R packages
         run: Rscript -e 'install.packages(c("pheatmap","ggrepel","cluster"), repos="https://cloud.r-project.org")'
       - name: Install LaTeX packages
@@ -20,7 +20,7 @@ jobs:
           done
       - name: Render R Markdown to PDF
         run: Rscript -e 'rmarkdown::render("HW3.Rmd", output_dir = "output")' && cp -r results output/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: HW3-report
           path: output/
