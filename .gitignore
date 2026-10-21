@@ -1,0 +1,7 @@
+.Rhistory
+.RData
+.Rproj.user/
+*.log
+HW3.tex
+HW3_files/
+results/
