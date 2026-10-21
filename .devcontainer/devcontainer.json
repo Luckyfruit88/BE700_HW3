@@ -1,7 +1,7 @@
 {
   "name": "BE700 HW3 (R + LaTeX)",
   "image": "rocker/verse:4.4.1",
-  "postCreateCommand": "Rscript -e 'install.packages(c(\"pheatmap\",\"ggrepel\",\"cluster\"), repos=\"https://cloud.r-project.org\")'",
+  "postCreateCommand": "Rscript -e 'install.packages(c(\"pheatmap\",\"ggrepel\",\"cluster\"), repos=\"https://cloud.r-project.org\")' && tlmgr install booktabs footnotehyper mdwtools framed xurl bookmark upquote microtype parskip fancyvrb etoolbox selnolig || true",
   "customizations": {
     "vscode": { "extensions": ["REditorSupport.r"] }
   }
