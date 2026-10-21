@@ -1,0 +1,6 @@
+List	source_file	input_symbols	DAVID_IDs	background
+age_down	output/results/DAVID_age_down.txt	58	47	Human Genome U133 Plus 2 Array
+age_up	output/results/DAVID_age_up.txt	47	42	Human Genome U133 Plus 2 Array
+cluster1_up	output/results/DAVID_cluster1_up.txt	106	92	Human Genome U133 Plus 2 Array
+cluster2_up	output/results/DAVID_cluster2_up.txt	109	102	Human Genome U133 Plus 2 Array
+SI_top200	output/results/DAVID_SI_top200.txt	246	211	Human Genome U133 Plus 2 Array

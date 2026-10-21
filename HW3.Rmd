@@ -490,14 +490,20 @@ ggplot(de, aes(log_diff_T2D_vs_FHneg, -log10(p))) +
   labs(x = "mean log expression, T2D minus FH-", y = "-log10 p")
 ```
 
-# Gene lists for DAVID (Part III)
+# DAVID functional enrichment (Part III)
 
-Gene lists are written to `results/` for upload to DAVID
-(<https://davidbioinformatics.nih.gov>, Functional Annotation, identifier type OFFICIAL_GENE_SYMBOL,
-species *Homo sapiens*, background = all genes on the array), where KEGG pathways and GO
-Biological Process terms are examined. DAVID is a web tool, so this step is run by hand on the
-exported lists; its results (top KEGG / GO terms with FDR) will be added here after the in-class
-discussion of Part III.
+Five gene lists are written to `results/` and analyzed with the DAVID Functional Annotation
+Chart (<https://davidbioinformatics.nih.gov>, run on October 21, 2026; the site listed
+Knowledgebase v2026_2 as its latest release): genes decreasing with age (`age_down`), genes
+increasing with age (`age_up`), the top 100 marker genes of each k-means cluster after sex-gene
+removal (`cluster1_up`, `cluster2_up`), and the 200 genes most correlated with insulin
+sensitivity (`SI_top200`). The single robust age gene was not submitted. Settings: identifier
+OFFICIAL_GENE_SYMBOL, species *Homo sapiens*, background = DAVID's built-in *Human Genome U133
+Plus 2 Array* population (the array used here, so the background is the genes measurable on
+this platform), categories KEGG_PATHWAY and GOTERM_BP_DIRECT, default chart thresholds
+(Count >= 2, EASE p <= 0.1). Probe sets annotated with several symbols (`A///B`) were split
+into separate symbols before upload. DAVID is a web tool, so its output is stored unchanged in
+`data/david/` and read back here; FDR is DAVID's Benjamini-Hochberg-type FDR column.
 
 ```{r export}
 up   <- age_tab$gene[age_tab$gene %in% age_genes & age_tab$r_pearson > 0]
@@ -515,6 +521,45 @@ for (k in levels(ph$km_ns)) {
 }
 c(age_up = length(up), age_down = length(down), robust = length(robust))
 ```
+
+```{r david}
+dv <- read.delim("data/david/DAVID_chart_results.tsv", check.names = FALSE)
+dinfo <- read.delim("data/david/DAVID_run_info.tsv")
+lists <- dinfo$List
+dv$Category <- ifelse(dv$Category == "KEGG_PATHWAY", "KEGG", "GO-BP")
+dv$Term <- sub("^(hsa[0-9]+:|GO:[0-9]+~)", "", dv$Term)
+dinfo$terms_p_le_0.1 <- as.vector(table(factor(dv$List, lists)))
+dinfo$terms_FDR_lt_0.05 <- as.vector(table(factor(dv$List[dv$FDR < 0.05], lists)))
+knitr::kable(dinfo[, c("List", "input_symbols", "DAVID_IDs", "terms_p_le_0.1", "terms_FDR_lt_0.05")],
+             row.names = FALSE,
+             caption = "DAVID input lists: symbols submitted, symbols mapped to DAVID IDs, and KEGG + GO-BP terms returned.")
+top <- do.call(rbind, lapply(split(dv, list(dv$List, dv$Category), drop = TRUE),
+                             function(d) head(d[order(d$PValue), ], 3)))
+top <- top[order(match(top$List, lists), top$Category != "KEGG", top$PValue), ]
+top$Term <- ifelse(nchar(top$Term) > 48, paste0(substr(top$Term, 1, 45), "..."), top$Term)
+top$fold <- round(top$`Fold Enrichment`, 1)
+top$p <- signif(top$PValue, 2); top$FDR <- signif(top$FDR, 2)
+knitr::kable(top[, c("List", "Category", "Term", "Count", "fold", "p", "FDR")], row.names = FALSE,
+             caption = "Top 3 KEGG and top 3 GO-BP terms per list (DAVID EASE p; FDR < 0.05 only in age_down).")
+sig <- dv[dv$FDR < 0.05, c("Category", "Term", "Count", "Genes", "FDR")]
+sig$FDR <- signif(sig$FDR, 2)
+knitr::kable(sig, row.names = FALSE,
+             caption = "All DAVID terms with FDR < 0.05 (age_down list) and the genes that drive them.")
+```
+
+**Interpretation.** Only the age-decreasing list gives terms that survive FDR < 0.05, and they
+form one coherent theme: mitochondrial energy metabolism. KEGG carbon metabolism, lipoic acid
+metabolism and the citrate (TCA) cycle, and GO-BP tricarboxylic acid cycle, malate-aspartate
+shuttle and mitochondrial fission are all enriched, driven by a small core of genes (DLAT and
+PDHB of pyruvate dehydrogenase, MDH2, GOT1, GCSH, L2HGDH, SLC25A12, and the fission genes MFF,
+MUL1 and MTFR1L). This is the "mitochondrial dysfunction" hallmark of aging and supports the
+mitochondrial part of H3, but not its extracellular-matrix or inflammation parts, which are not
+significantly enriched in either age list. The genes increasing with age show only a nominal mRNA-splicing
+signal (FDR about 0.96). The two cluster marker lists give only nominal terms (cluster 1:
+growth-factor receptor signaling through PDGFRB, FGFR2 and VEGFA; cluster 2: Polycomb
+repressive complex, splicing and endocytosis, best FDR = 0.09), which matches the weak cluster
+structure (silhouette about 0.02). The SI list has no pathway-level signal, so the SRF result
+above rests on the targeted gene tests, not on DAVID.
 
 # Discussion
 
@@ -552,8 +597,10 @@ mitochondrial ribosome), which fits the "mitochondrial dysfunction" hallmark of 
 the correlations weaken in the 40 non-diabetic subjects and only `r length(robust)` gene
 (`r paste(robust, collapse = ", ")`) remains significant after adjusting for sex and diabetes.
 Because the T2D group is about 12 years older, part of the apparent age signature is a diabetes
-signature, so H4 is supported. DAVID on the age-down list is the planned test of whether the
-mitochondrial theme is statistically enriched.
+signature, so H4 is supported. DAVID confirms that the mitochondrial theme is statistically
+enriched in the age-down list (KEGG carbon metabolism FDR = 0.012, GO-BP TCA cycle
+FDR = 0.012), but because the input list is exploratory and confounded with diabetes, this
+shows *where* the age/diabetes signal concentrates rather than proving an age-only effect.
 
 **Reproduction of Jin et al.** SRF and its co-activator MKL1 are negatively correlated with
 insulin sensitivity (SRF r = `r round(si_cor$r[si_cor$gene=="SRF"], 2)`, MKL1
@@ -579,6 +626,8 @@ Claude (Anthropic) was used to draft the analysis plan, write the R code in this
 and draft the text. The analysis choices (gene filtering, sex-gene removal, confounder
 adjustment, outlier handling) and all interpretations were reviewed and checked against the
 output by the author. Code was run in a GitHub Codespace / GitHub Actions runner (rocker/verse container).
+The DAVID queries were submitted through the DAVID website by Claude using browser automation;
+the returned tables are stored unchanged in `data/david/`.
 
 # References
 
