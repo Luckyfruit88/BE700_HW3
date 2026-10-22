@@ -828,22 +828,6 @@ unverified QC flags limit interpretation. No causal effects or general aging bio
 claims are established. A stronger follow-up could use explicitly justified covariates,
 moderated microarray models such as limma, ranked gene-set tests, and independent data.
 
-# AI usage and reproducibility
-
-Claude (Anthropic) assisted with the initial analysis code and narrative, including the
-stored DAVID website queries. Codex (OpenAI) subsequently assisted with statistical review,
-missing-value and multiplicity corrections, sample-sensitivity analyses, interpretation,
-and validation. These are AI-assisted contributions; the author is responsible for the
-final review and submission. This statement does not assert independent human verification
-of every AI-generated interpretation.
-
-The earlier report was run in GitHub Codespaces/Actions with rocker/verse. This revision
-was tested on the Boston University SCC through VS Code using R 4.4.3, Pandoc 2.5, and
-TeX Live 2023. Full session information for the present render follows. Saved DAVID results
-are imported with an input-membership guard; they are not automatically regenerated.
-Run the entire document in a fresh R process before submission. Individual chunks share
-state in the interactive console and can otherwise use stale objects or RNG state.
-
 # References
 
 1. Jin W, Goldfine AB, Boes T, et al. Increased SRF transcriptional activity in human and mouse
@@ -860,7 +844,3 @@ state in the interactive console and can otherwise use stale objects or RNG stat
    <https://davidbioinformatics.nih.gov/documentation/tools/tech-gene-enrichment.html>.
 6. R `cor.test` documentation (Spearman asymptotic approximation):
    <https://stat.ethz.ch/R-manual/R-devel/library/stats/html/cor.test.html>.
-
-```{r session, echo=FALSE}
-sessionInfo()
-```

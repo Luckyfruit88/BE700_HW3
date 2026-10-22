@@ -1,6 +1,6 @@
 # BE700 Homework 3: Insulin Resistance and Aging
 
-Exploratory analysis of the course-provided GSE25462 human muscle expression and phenotype tables. `HW3.Rmd` contains the analysis, interpretation, and complete session information.
+Exploratory analysis of the course-provided GSE25462 human muscle expression and phenotype tables. `HW3.Rmd` contains the analysis and interpretation. Runtime session information is saved separately in `output/sessionInfo.txt`.
 
 ## Run and validate
 
