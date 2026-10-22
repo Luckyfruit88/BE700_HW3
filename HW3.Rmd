@@ -1,7 +1,6 @@
 ---
 title: "BE700 Homework 3: Insulin Resistance, Diabetes and Aging in Human Skeletal Muscle"
-subtitle: "Analysis of GSE25462 (Jin et al., JCI 2011)"
-author: "Jay (fruit88)"
+author: "Jinjie Liu"
 date: "`r format(Sys.Date(), '%B %d, %Y')`"
 output:
   pdf_document:
@@ -10,6 +9,10 @@ output:
     fig_caption: true
 geometry: margin=0.9in
 fontsize: 11pt
+header-includes:
+  - \usepackage{fvextra}
+  - \RecustomVerbatimEnvironment{verbatim}{Verbatim}{breaklines,breakanywhere}
+  - \DefineVerbatimEnvironment{Highlighting}{Verbatim}{commandchars=\\\{\},breaklines,breakanywhere}
 ---
 
 ```{r setup, include=FALSE}
@@ -28,6 +31,7 @@ library(pheatmap); library(ggplot2); library(ggrepel); library(cluster)
 set.seed(700)
 theme_set(theme_bw(base_size = 10))
 dir.create("results", showWarnings = FALSE)
+fmt_q <- function(x) formatC(x, digits = 3, format = "g")
 ```
 
 # Introduction and hypotheses
@@ -54,10 +58,21 @@ Hypotheses tested here:
 
 # Data and preprocessing
 
-* **Expression:** `BE700_human_expression_1.csv`, Affymetrix HG-U133 Plus 2.0 (GPL570),
-  summarized to gene symbols and already log-normalized (no further normalization applied).
-* **Phenotypes:** `BE700_human_pheno_1.csv`, the GEO series matrix sample table; the
-  informative columns are those ending in `:ch1`.
+* **Expression:** the course-provided `BE700_human_expression_1.csv` for GSE25462.
+  The assignment explicitly states that this matrix is already log-normalized; no second
+  log transform or additional normalization is applied here.
+* **Phenotypes:** `BE700_human_pheno_1.csv`, containing the GEO sample metadata and
+  the phenotype columns ending in `:ch1`.
+* **Provenance boundary:** the metadata identifies GPL570 (Human Genome U133 Plus 2.0)
+  and records GCOS v1.3/MAS5.0 processing with a trimmed-mean scaling target of 1500.
+  This upstream processing is distinct from the log-transformed, annotated course matrix.
+  The exact probe-to-feature aggregation script and annotation version were not supplied.
+  The paper's main text describes U133A 2.0 and groups of 15/26/11 people, whereas GEO and
+  the supplied matrix contain 15/25/10. This analysis uses the 50 supplied samples and their
+  GPL570 metadata, not the paper's larger demographic totals.
+* **Unit of analysis:** rows are gene-annotated expression features. Entries such as
+  `A///B` have ambiguous multi-gene annotations; splitting them for annotation does not
+  establish that the expression of A and B was measured independently.
 
 ```{r load}
 expr_raw <- read.csv("data/BE700_human_expression_1.csv", check.names = FALSE,
@@ -90,33 +105,57 @@ ph$label    <- paste0(c("FH-" = "N", "FH+" = "P", "T2D" = "D")[as.character(ph$g
 ph$diabetes <- factor(ph$group == "T2D", labels = c("No", "Yes"))
 rownames(ph) <- ph$sample
 
-stopifnot(identical(colnames(expr), ph$sample))       # QC: sample order matches
+stopifnot(identical(colnames(expr), ph$sample),
+          !anyDuplicated(ph$sample), !anyDuplicated(rownames(expr)),
+          is.numeric(expr), all(is.finite(expr)),
+          all(apply(expr, 1, var) > 0),
+          !anyNA(ph[, c("age", "sex", "group", "diabetes")]))
+n_multimapping <- sum(grepl("///", rownames(expr), fixed = TRUE))
 dim(expr)
 ```
 
-The matrix has **`r nrow(expr)` genes x `r ncol(expr)` samples**; one row with an empty gene
-name was removed. Sample order matches the phenotype table.
+The matrix has **`r nrow(expr)` expression features x `r ncol(expr)` samples** after
+removing `r sum(!keep)` row with an empty annotation. Sample order matches the phenotype
+table; expression values are finite and row identifiers are unique. Of the retained rows,
+`r n_multimapping` contain `///` multi-gene annotations. Gene names below refer to these
+annotations, with this measurement ambiguity retained.
 
 ```{r pheno-table}
-tab <- aggregate(cbind(age, bmi, hba1c, si) ~ group, data = ph,
-                 FUN = function(x) round(mean(x), 1), na.action = na.pass)
-tab$n      <- as.vector(table(ph$group))
-tab$female <- as.vector(table(ph$group, ph$sex)[, "female"])
-knitr::kable(tab[, c("group", "n", "female", "age", "bmi", "hba1c", "si")],
-             caption = "Cohort by group (means; SI = insulin sensitivity).")
+summary_vars <- c("age", "bmi", "hba1c", "si")
+cohort_summary <- do.call(rbind, lapply(levels(ph$group), function(g) {
+  rows <- ph$group == g
+  out <- data.frame(group = g, n = sum(rows),
+                    female = sum(ph$sex[rows] == "female"))
+  for (v in summary_vars) {
+    x <- ph[[v]][rows]
+    out[[paste0(v, "_n")]] <- sum(!is.na(x))
+    out[[paste0(v, "_mean")]] <- if (all(is.na(x))) NA_real_ else
+      mean(x, na.rm = TRUE)
+  }
+  out
+}))
+cohort_display <- cohort_summary[, c("group", "n", "female")]
+for (v in summary_vars) {
+  cohort_display[[v]] <- sprintf("%.1f (n=%d)",
+    cohort_summary[[paste0(v, "_mean")]], cohort_summary[[paste0(v, "_n")]])
+}
+knitr::kable(cohort_display, row.names = FALSE,
+  caption = "Cohort summary: mean and available n for each measure; SI = insulin sensitivity.")
+write.csv(cohort_summary, "results/cohort_summary.csv", row.names = FALSE)
 kruskal.test(age ~ group, data = ph)
 colSums(is.na(ph[, c("whr", "si", "glu2h")]))
 ```
 
-**Data issues found.** (i) The T2D group is older than the FH- and FH+ groups (age differs
-by group, Kruskal-Wallis above), so age and diabetes are confounded (H4). (ii) OGTT values are
-missing for all T2D subjects, SI for two, and waist-hip ratio for one (stored as the string
-"missing value"). (iii) One FH- subject has BMI 20 but WHR 1.36, the cohort maximum, which is
-probably a data-entry error; WHR is therefore not used for inference.
+**Data issues found.** (i) The T2D group is older than the FH- and FH+ groups, so age and
+diabetes are associated in this sample and can confound expression comparisons (H4).
+(ii) OGTT values are missing for all T2D subjects, SI for two, and waist-hip ratio for one.
+The T2D SI mean uses its eight observed values; missing values do not erase the group mean.
+(iii) One FH- subject has BMI 20 but WHR 1.36, an unusual combination requiring source
+verification. It is not sufficient evidence of an entry error; WHR is not used for inference.
 
 ## Quality control
 
-```{r qc-box, fig.height=3.2, fig.cap="Per-sample expression distributions (log scale). Distributions are comparable, so no further normalization was applied."}
+```{r qc-box, fig.height=3.2, fig.cap="Per-sample distributions of the course-provided log-normalized matrix; no additional normalization was applied."}
 ord <- order(ph$group)
 boxplot(expr[, ord], outline = FALSE, las = 2, cex.axis = 0.5, names = ph$label[ord],
         col = c("grey85", "lightblue", "salmon")[ph$group[ord]], ylab = "log expression")
@@ -135,20 +174,20 @@ knitr::kable(data.frame(sample = ph$label, reported = ph$sex, XIST = sexchk$XIST
              digits = 1, row.names = FALSE, caption = "Samples whose expression disagrees with reported sex.")
 ```
 
-Reported sex agrees with XIST/RPS4Y1 expression for `r sum(!mm)` of `r nrow(ph)` samples.
-`r paste(ph$label[mm & pred_sex == "male"], collapse = ", ")` is reported female but expresses
-Y-linked genes and lacks XIST, so it is most likely a mislabeled male.
-`r paste(ph$label[mm & pred_sex == "ambiguous"], collapse = ", ")` expresses **both** XIST and
-Y-linked genes at high levels; this is consistent with a mixed / contaminated sample (or, less
-likely, a 47,XXY karyotype). The same subject has the implausible WHR noted above, so this record
-is treated with suspicion. Both samples are kept with their reported labels in the main analysis
-and excluded in a sensitivity analysis (Section 6).
+The exploratory XIST/RPS4Y1 thresholds flag `r sum(mm)` of `r nrow(ph)` samples:
+`r paste(ph$label[mm], collapse = ", ")`. These are expression--metadata discrepancies,
+not diagnoses of sample mislabeling, contamination, or a karyotype. The two markers and
+heuristic cutoffs are insufficient to determine the cause. Reported labels and all samples
+are retained in the main analysis; flagged samples are excluded only in explicitly labeled
+age and PCA sensitivity analyses. Multiple sex-chromosome markers and source records would
+be needed before relabeling or permanently excluding a sample.
 
 ## Outlier samples
 
 ```{r qc-outlier, fig.height=3, fig.cap="Median Pearson correlation of each sample with all other samples. Red: below Q1 - 1.5 IQR."}
 cc <- cor(expr)
-medcor <- apply(cc, 2, function(v) median(v[v < 1]))
+diag(cc) <- NA_real_  # exclude self-correlation explicitly
+medcor <- apply(cc, 2, median, na.rm = TRUE)
 thr <- quantile(medcor, 0.25) - 1.5 * IQR(medcor)
 outl <- ph$label[medcor < thr]
 o2 <- order(medcor)
@@ -159,8 +198,11 @@ abline(h = thr, lty = 2)
 excl <- ph$sample[medcor < thr | mm]   # outliers + sex-discordant samples
 ```
 
-The median between-sample correlation is only `r round(median(medcor), 3)`, so the arrays are
-noisy relative to typical RNA-seq data. Outlier samples: `r if (length(outl)) paste(outl, collapse = ", ") else "none"`.
+The median between-sample correlation is `r round(median(medcor), 3)`.
+Lower-correlation flags: `r if (length(outl)) paste(outl, collapse = ", ") else "none"`.
+This within-dataset diagnostic does not establish technical failure or justify a numerical
+comparison with RNA-seq datasets processed on other scales. The union of correlation and
+sex-marker flags is `r paste(ph$label[ph$sample %in% excl], collapse = ", ")`.
 
 # Heatmap of the muscle transcriptome
 
@@ -195,6 +237,8 @@ tt <- apply(expr, 1, function(g) t.test(g ~ ph$sex)$p.value)
 dm <- rowMeans(expr[, ph$sex == "male"]) - rowMeans(expr[, ph$sex == "female"])
 sex_genes <- names(which(p.adjust(tt, "BH") < 0.05 & abs(dm) > 1))
 length(sex_genes); head(sort(sex_genes), 25)
+sex_variance_fraction <- sum(apply(expr[sex_genes, , drop = FALSE], 1, var)) /
+  sum(apply(expr, 1, var))
 expr_ns <- expr[setdiff(rownames(expr), sex_genes), ]
 top_ns  <- names(sort(apply(expr_ns, 1, var), decreasing = TRUE))[1:1000]
 z_ns    <- t(scale(t(expr_ns[top_ns, ])))
@@ -211,11 +255,14 @@ pheatmap(z_ns, show_rownames = FALSE, labels_col = ph$label, fontsize_col = 6,
 # Clustering patients
 
 Both k-means (25 random starts) and hierarchical clustering (Ward.D2) were applied to the
-samples, on the z-scored top-1,000 genes with and without sex-associated genes. The number
-of clusters was chosen by average silhouette width for k = 2 to 6, and agreement between
-methods was measured with the adjusted Rand index (ARI).
+samples, on the z-scored top-1,000 features with and without sex-associated features. The
+number of clusters was chosen by average silhouette width for k = 2 to 6; a final k-means fit
+at the selected k uses 25 random starts. Final-fit silhouette widths are reported separately
+from the candidate-k fits. Agreement between methods is measured with the adjusted Rand
+index (ARI). A best k among 2--6 does not itself establish discrete biological subgroups.
 
 ```{r cluster}
+set.seed(700)  # isolate clustering from earlier plotting/interactive RNG state
 ari <- function(a, b) {                       # adjusted Rand index
   tab <- table(a, b); n <- sum(tab); c2 <- function(x) sum(choose(x, 2))
   e <- c2(rowSums(tab)) * c2(colSums(tab)) / choose(n, 2)
@@ -246,6 +293,10 @@ c(k_all = k_all, ARI_all = round(ari(ph$km_all, ph$hc_all), 2),
   k_nosex = k_ns, ARI_nosex = round(ari(ph$km_ns, ph$hc_ns), 2))
 table(kmeans_all = ph$km_all, sex = ph$sex)
 table(kmeans_nosex = ph$km_ns, group = ph$group)
+final_silhouette <- c(
+  all = mean(silhouette(as.integer(ph$km_all), cl_all$d)[, 3]),
+  nosex = mean(silhouette(as.integer(ph$km_ns), cl_ns$d)[, 3]))
+final_silhouette
 ```
 
 ## Are clusters enriched for phenotypes?
@@ -291,45 +342,59 @@ and (b) the correlation re-computed in the 40 non-diabetic subjects only.
 
 ```{r age-cor}
 cor_test_vec <- function(M, x, method = "pearson") {
-  r <- as.vector(cor(t(M), x, method = method, use = "pairwise.complete.obs"))
-  n <- sum(!is.na(x)); tstat <- r * sqrt((n - 2) / (1 - r^2))
+  use <- is.finite(x)
+  M <- M[, use, drop = FALSE]; x <- x[use]
+  stopifnot(ncol(M) > 2, all(is.finite(M)))
+  r <- as.vector(cor(t(M), x, method = method))
+  n <- length(x)
+  tstat <- r * sqrt((n - 2) / (1 - r^2))
   p <- 2 * pt(-abs(tstat), n - 2)
   data.frame(gene = rownames(M), r = r, p = p, q = p.adjust(p, "BH"))
+}
+# Classical OLS fitted by QR; returns a specified coefficient for every feature.
+fit_feature_lm <- function(M, metadata, formula, term) {
+  X <- model.matrix(formula, metadata)
+  stopifnot(nrow(X) == ncol(M), all(is.finite(X)), all(is.finite(M)))
+  fit <- lm.fit(X, t(M))
+  stopifnot(fit$rank == ncol(X), nrow(X) > fit$rank)
+  j <- match(term, colnames(X)); stopifnot(!is.na(j))
+  unscaled <- chol2inv(qr.R(fit$qr))
+  j_pivot <- match(j, fit$qr$pivot)
+  residual_df <- nrow(X) - fit$rank
+  s2 <- colSums(fit$residuals^2) / residual_df
+  se <- sqrt(s2 * unscaled[j_pivot, j_pivot])
+  beta <- as.vector(fit$coefficients[j, ])
+  p <- 2 * pt(-abs(beta / se), residual_df)
+  data.frame(gene = rownames(M), beta = beta, se = se,
+             p = p, q = p.adjust(p, "BH"), row.names = NULL)
 }
 pear <- cor_test_vec(expr, ph$age, "pearson")
 spear <- cor_test_vec(expr, ph$age, "spearman")
 nd <- ph$diabetes == "No"
 pear_nd <- cor_test_vec(expr[, nd], ph$age[nd], "pearson")
-
-# Vectorized OLS: expression ~ age + sex + diabetes, t-test on the age coefficient
-X <- model.matrix(~ age + sex + diabetes, ph)
-B <- solve(crossprod(X), crossprod(X, t(expr)))
-res <- t(expr) - X %*% B
-s2 <- colSums(res^2) / (nrow(X) - ncol(X))
-se_age <- sqrt(s2 * solve(crossprod(X))["age", "age"])
-t_age <- B["age", ] / se_age
-p_lm <- 2 * pt(-abs(t_age), nrow(X) - ncol(X))
-
-age_tab <- data.frame(gene = pear$gene, r_pearson = pear$r, q_pearson = pear$q,
-                      r_spearman = spear$r, q_spearman = spear$q,
-                      r_nondiabetic = pear_nd$r, p_nondiabetic = pear_nd$p,
-                      beta_age_adj = B["age", ], q_adj = p.adjust(p_lm, "BH"))
-age_tab <- age_tab[order(pear$p), ]
+age_adjusted <- fit_feature_lm(expr, ph, ~ age + sex + diabetes, "age")
+age_tab <- data.frame(gene = pear$gene, r_pearson = pear$r,
+  p_pearson = pear$p, q_pearson = pear$q,
+  r_spearman = spear$r, p_spearman = spear$p, q_spearman = spear$q,
+  r_nondiabetic = pear_nd$r, p_nondiabetic = pear_nd$p,
+  beta_age_adj = age_adjusted$beta, p_adj = age_adjusted$p,
+  q_adj = age_adjusted$q)
+age_tab <- age_tab[order(age_tab$p_pearson), ]
 write.csv(age_tab, "results/age_correlation_all_genes.csv", row.names = FALSE)
-
-sig <- c(pearson_q05 = sum(age_tab$q_pearson < 0.05),
-         spearman_q05 = sum(age_tab$q_spearman < 0.05),
-         adjusted_q05 = sum(age_tab$q_adj < 0.05),
-         nondiabetic_p001 = sum(age_tab$p_nondiabetic < 0.001),
-         pearson_p001 = sum(pear$p < 0.001))
-sig
+age_sig_counts <- c(
+  pearson_q05 = sum(age_tab$q_pearson < 0.05),
+  spearman_q05 = sum(age_tab$q_spearman < 0.05),
+  adjusted_q05 = sum(age_tab$q_adj < 0.05),
+  nondiabetic_p001 = sum(age_tab$p_nondiabetic < 0.001),
+  pearson_p001 = sum(pear$p < 0.001))
+age_sig_counts
 ```
 
 ```{r age-select}
 # Age-gene set: Pearson FDR < 0.05; fall back to the top 100 by p if fewer than 30 pass
-age_genes <- if (sig["pearson_q05"] >= 30) age_tab$gene[age_tab$q_pearson < 0.05] else
+age_genes <- if (age_sig_counts["pearson_q05"] >= 30) age_tab$gene[age_tab$q_pearson < 0.05] else
   head(age_tab$gene, 100)
-age_rule  <- if (sig["pearson_q05"] >= 30) "Pearson FDR < 0.05" else "top 100 by Pearson p"
+age_rule  <- if (age_sig_counts["pearson_q05"] >= 30) "Pearson FDR < 0.05" else "top 100 by Pearson p"
 robust    <- age_tab$gene[age_tab$gene %in% age_genes & age_tab$q_adj < 0.1 &
                           sign(age_tab$r_nondiabetic) == sign(age_tab$r_pearson)]
 c(n_age_genes = length(age_genes), n_up = sum(age_tab$r_pearson[age_tab$gene %in% age_genes] > 0),
@@ -340,13 +405,60 @@ knitr::kable(head(age_tab[, c("gene", "r_pearson", "q_pearson", "r_spearman",
              caption = "Top 20 age-correlated genes. q_adj: FDR for age in expression ~ age + sex + diabetes.")
 ```
 
-The age-gene set (`r age_rule`) contains **`r length(age_genes)` genes**; `r length(robust)` of
-them stay significant after adjusting for sex and diabetes (q < 0.1) and keep the same
-direction in non-diabetic subjects.
+The age-ranked set (`r age_rule`) contains **`r length(age_genes)` expression features**.
+It is an exploratory selection, not a list of 100 FDR-significant genes. Full-sample counts
+at BH q < 0.05 are `r age_sig_counts["pearson_q05"]` (Pearson),
+`r age_sig_counts["spearman_q05"]` (Spearman), and `r age_sig_counts["adjusted_q05"]`
+(age adjusted for sex and diabetes). Spearman p-values use the asymptotic t approximation,
+as in `cor.test(..., method = "spearman", exact = FALSE)`.
+Within the selected set, `r length(robust)` feature meets the exploratory adjusted q < 0.1
+rule and retains the Pearson direction in the overlapping non-diabetic subset. This is a
+within-cohort consistency check, not independent replication. The age-ordered heatmap and
+top-gene plots below visualize the selection and are not independent tests of it.
 
-## Heatmap of age-correlated genes
+## Sensitivity of age associations to flagged samples
 
-```{r hm-age, fig.height=6.5, fig.cap="Age-correlated genes; samples ordered by age (left = youngest). Genes clustered."}
+```{r age-sensitivity}
+keep_s <- !(ph$sample %in% excl)
+age_sensitivity <- fit_feature_lm(
+  expr[, keep_s], ph[keep_s, ], ~ age + sex + diabetes, "age")
+age_sensitivity <- age_sensitivity[order(age_sensitivity$p), ]
+write.csv(age_sensitivity, "results/age_adjusted_sample_sensitivity.csv",
+          row.names = FALSE)
+age_full_significant <- age_tab$gene[age_tab$q_adj < 0.05]
+age_sens_significant <- age_sensitivity$gene[age_sensitivity$q < 0.05]
+comparison_genes <- unique(c(age_full_significant, age_sens_significant))
+age_sample_comparison <- data.frame(
+  gene = comparison_genes,
+  beta_all = age_tab$beta_age_adj[match(comparison_genes, age_tab$gene)],
+  q_all = age_tab$q_adj[match(comparison_genes, age_tab$gene)],
+  beta_without_flags = age_sensitivity$beta[
+    match(comparison_genes, age_sensitivity$gene)],
+  q_without_flags = age_sensitivity$q[
+    match(comparison_genes, age_sensitivity$gene)])
+knitr::kable(age_sample_comparison, digits = 4, row.names = FALSE,
+  caption = "Same age + sex + diabetes model and feature universe: all 50 vs 46 samples.")
+write.csv(age_sample_comparison, "results/age_sample_comparison.csv",
+          row.names = FALSE)
+```
+
+After excluding `r paste(ph$label[!keep_s], collapse = ", ")`, the identical adjusted model
+and BH correction across all `r nrow(expr)` features identify
+**`r paste(age_sens_significant, collapse = ", ")`** at q < 0.05
+(`r paste(fmt_q(age_sensitivity$q[match(age_sens_significant, age_sensitivity$gene)]), collapse = ", ")`).
+The full-sample significant feature is **`r paste(age_full_significant, collapse = ", ")`**.
+For UNC13C, adjusted q changes from
+`r fmt_q(age_tab$q_adj[match("UNC13C", age_tab$gene)])` to
+`r fmt_q(age_sensitivity$q[match("UNC13C", age_sensitivity$gene)])`.
+Thus the identity of the 5%-FDR age signal changes from
+`r paste(age_full_significant, collapse = ", ")` to
+`r paste(age_sens_significant, collapse = ", ")` when these samples are excluded. UNC13C still meets the exploratory 10% threshold after exclusion, but not 5%.
+This dependence on sample selection limits a claim of a stable age-gene signature; it does
+not prove that the flagged samples should be removed.
+
+## Heatmap of the exploratory age-ranked features
+
+```{r hm-age, fig.height=6.5, fig.cap="Exploratory age-ranked features; samples ordered by age (left = youngest). Rows clustered."}
 oa <- order(ph$age)
 za <- t(scale(t(expr[age_genes, oa])))
 pheatmap(za, cluster_cols = FALSE, show_rownames = length(age_genes) <= 60,
@@ -383,7 +495,7 @@ ggplot(bar, aes(r, gene, fill = set)) + geom_col(position = "dodge", width = 0.7
 
 # Principal component analysis
 
-PCA (`prcomp`) was run on all `r nrow(expr)` genes, each centered to mean zero but not scaled
+PCA (`prcomp`) was run on all `r nrow(expr)` expression features, each centered to mean zero but not scaled
 (the data are already on a log scale, so unscaled PCA keeps high-variance genes influential).
 It was repeated after removing sex-associated genes. Each point is labeled with the subject
 code (N = FH-, P = FH+, D = T2D, followed by the GEO sample number within the group).
@@ -411,12 +523,27 @@ ggplot(pcd_ns, aes(PC1, PC2, colour = age, shape = group)) + geom_point(size = 2
   labs(x = sprintf("PC1 (%.1f%%)", ve_ns[1]), y = sprintf("PC2 (%.1f%%)", ve_ns[2]))
 ```
 
-**Sensitivity analysis.** The first PCs are pulled by a few individual samples (e.g. D10 alone
-drives PC2). PCA was therefore repeated without the outlier and sex-discordant samples
-(`r paste(ph$label[ph$sample %in% excl], collapse = ", ")`), using the 1,000 most variable
-non-sex genes, each scaled to unit variance so no single gene dominates.
+**Matched PCA sensitivity analysis.** To isolate the effect of sample inclusion, the next
+two PCAs use the same 1,000 non-sex features selected in the full dataset and the same
+centering/unit-variance scaling rule. One includes all 50 samples, the other excludes the
+four exploratory flags. This pair separates sample inclusion from the different feature
+selection/scaling choices used by the preceding all-feature PCAs. PC axes are estimated
+anew in each fit; PC2 should not be assumed to represent an identical biological axis.
 
-```{r pca-sens, fig.height=4.8, fig.cap="Sensitivity PCA: outlier and sex-discordant samples removed, top 1,000 variable non-sex genes, scaled. Colored by group, size by BMI."}
+```{r pca-matched-full, fig.height=4.8, fig.cap="Matched PCA control: all 50 samples, fixed top 1,000 non-sex features, scaled. Compare with the next panel."}
+pca_matched <- prcomp(t(expr_ns[top_ns, ]), center = TRUE, scale. = TRUE)
+ve_matched <- 100 * pca_matched$sdev^2 / sum(pca_matched$sdev^2)
+pcd_matched <- cbind(ph, pca_matched$x[, 1:6])
+ggplot(pcd_matched, aes(PC1, PC2, colour = group, size = bmi)) +
+  geom_point(alpha = 0.85) +
+  geom_text_repel(aes(label = label), size = 2.4, max.overlaps = 50,
+                  show.legend = FALSE) +
+  scale_colour_manual(values = ann_col$Group) + scale_size(range = c(1.2, 4)) +
+  labs(x = sprintf("PC1 (%.1f%%)", ve_matched[1]),
+       y = sprintf("PC2 (%.1f%%)", ve_matched[2]))
+```
+
+```{r pca-sens, fig.height=4.8, fig.cap="Matched PCA sensitivity: 46 samples after excluding exploratory QC flags; same top 1,000 non-sex features and scaling rule. Color: group; size: BMI."}
 keep_s  <- !(ph$sample %in% excl)
 pca_s   <- prcomp(t(expr_ns[top_ns, keep_s]), center = TRUE, scale. = TRUE)
 ve_s    <- 100 * pca_s$sdev^2 / sum(pca_s$sdev^2)
@@ -428,18 +555,42 @@ ggplot(pcd_s, aes(PC1, PC2, colour = group, size = bmi)) + geom_point(alpha = 0.
 ```
 
 ```{r pc-assoc}
-pc_assoc <- function(d) {
+pc_assoc <- function(d, analysis) {
   vars <- c("age", "bmi", "hba1c", "si", "finsulin")
-  out <- sapply(paste0("PC", 1:6), function(pc) c(
-    sex = wilcox.test(d[[pc]] ~ d$sex)$p.value,
-    group = kruskal.test(d[[pc]] ~ d$group)$p.value,
-    sapply(vars, function(v) cor.test(d[[pc]], d[[v]], method = "spearman", exact = FALSE)$p.value)))
-  signif(out, 2)
+  do.call(rbind, lapply(paste0("PC", 1:6), function(pc) {
+    p <- c(sex = wilcox.test(d[[pc]] ~ d$sex)$p.value,
+      group = kruskal.test(d[[pc]] ~ d$group)$p.value,
+      sapply(vars, function(v)
+        cor.test(d[[pc]], d[[v]], method = "spearman", exact = FALSE)$p.value))
+    n <- c(sex = sum(complete.cases(d[, c(pc, "sex")])),
+      group = sum(complete.cases(d[, c(pc, "group")])),
+      sapply(vars, function(v) sum(complete.cases(d[, c(pc, v)]))))
+    data.frame(analysis = analysis, PC = pc, phenotype = names(p),
+               n = as.integer(n), p = as.numeric(p))
+  }))
 }
-knitr::kable(pc_assoc(pcd), caption = "P-values: PCs (all genes) vs phenotypes (Wilcoxon / Kruskal-Wallis / Spearman).")
-knitr::kable(pc_assoc(pcd_ns), caption = "P-values: PCs (sex-associated genes removed) vs phenotypes.")
-knitr::kable(pc_assoc(pcd_s), caption = "P-values: sensitivity PCA (outliers removed) vs phenotypes.")
+pc_associations <- rbind(pc_assoc(pcd, "all_features"),
+  pc_assoc(pcd_ns, "nonsex_features"),
+  pc_assoc(pcd_matched, "matched_50"), pc_assoc(pcd_s, "matched_46"))
+# Each of the four declared analyses has 6 PCs x 7 phenotypes = 42 tests.
+pc_associations$q_within <- ave(pc_associations$p, pc_associations$analysis,
+                               FUN = function(p) p.adjust(p, "BH"))
+pc_associations$q_all <- p.adjust(pc_associations$p, "BH")
+write.csv(pc_associations, "results/pc_phenotype_associations.csv",
+          row.names = FALSE)
+pc_nominal <- pc_associations[pc_associations$p < 0.05, ]
+knitr::kable(pc_nominal, digits = 4, row.names = FALSE,
+  caption = "Nominal p < 0.05 rows shown after BH correction of all 42 tests per PCA and all 168 tests together. Full results are exported.")
+pc2_sensitivity <- pc_associations[
+  pc_associations$analysis == "matched_46" & pc_associations$PC == "PC2", ]
 ```
+
+There are `r nrow(pc_associations)` PC--phenotype tests in total. Within-PCA BH q < 0.05
+is reached by `r sum(pc_associations$q_within < 0.05)` tests; across-all-analyses BH q < 0.05
+by `r sum(pc_associations$q_all < 0.05)`. In the 46-sample PCA, the PC2--SI association has
+p = `r fmt_q(pc2_sensitivity$p[pc2_sensitivity$phenotype == "si"])` and
+within-PCA q = `r fmt_q(pc2_sensitivity$q_within[pc2_sensitivity$phenotype == "si"])`.
+It is a nominal exploratory association, not an FDR-significant finding.
 
 ```{r pc-loadings}
 ld <- pca_ns$rotation
@@ -454,7 +605,9 @@ data.frame(PC1_top_pos = names(head(sort(ld[, 1], decreasing = TRUE), 10)),
 As an exploratory extension, every gene was correlated (Spearman) with insulin sensitivity
 (SI, n = 48), and T2D was compared with FH- subjects (Welch t-test). Genes from Jin et al.'s
 SRF story (SRF, its co-activator MKL1/MRTF-A, and the SRF targets ACTA2, FHL1, VCL, CNN2) are
-checked individually.
+checked individually. These targeted checks reuse the original study's public cohort;
+they are not independent replication. The Welch contrast is unadjusted; an additional
+model below estimates the T2D--FH- difference conditional on age and reported sex.
 
 ```{r si}
 si_ok <- !is.na(ph$si)
@@ -471,13 +624,17 @@ de <- data.frame(gene = names(de_p), log_diff_T2D_vs_FHneg = de_fc, p = de_p,
                  q = p.adjust(de_p, "BH"))[order(de_p), ]
 c(de_q05 = sum(de$q < 0.05), de_p001 = sum(de$p < 0.001))
 write.csv(de, "results/T2D_vs_FHneg.csv", row.names = FALSE)
+de_adjusted <- fit_feature_lm(expr, ph, ~ age + sex + group, "groupT2D")
+de_adjusted <- de_adjusted[order(de_adjusted$p), ]
+write.csv(de_adjusted, "results/T2D_vs_FHneg_age_sex_adjusted.csv",
+          row.names = FALSE)
 
 srf <- intersect(c("SRF", "MKL1", "MRTFA", "ACTA2", "FHL1", "VCL", "CNN2", "MYH11"), rownames(expr))
 knitr::kable(data.frame(gene = srf,
   r_SI = si_cor$r[match(srf, si_cor$gene)], p_SI = si_cor$p[match(srf, si_cor$gene)],
   diff_T2D_FHneg = de$log_diff_T2D_vs_FHneg[match(srf, de$gene)],
   p_T2D_FHneg = de$p[match(srf, de$gene)]), digits = 3, row.names = FALSE,
-  caption = "SRF pathway genes: correlation with SI and T2D vs FH- difference.")
+  caption = "Selected SRF-related genes: unadjusted associations and nominal p-values; these are not measurements of SRF transcriptional activity.")
 c(overlap_age_SI = length(intersect(age_genes, head(si_cor$gene, length(age_genes)))))
 ```
 
@@ -489,6 +646,13 @@ ggplot(de, aes(log_diff_T2D_vs_FHneg, -log10(p))) +
   geom_text_repel(aes(label = lab), size = 2.5, max.overlaps = 30) +
   labs(x = "mean log expression, T2D minus FH-", y = "-log10 p")
 ```
+
+The unadjusted Welch comparison yields `r sum(de$q < 0.05)` features at BH q < 0.05;
+the age/sex-adjusted T2D contrast yields `r sum(de_adjusted$q < 0.05)`.
+The latter includes all three groups in `expression ~ age + sex + group`, with FH- as
+reference. BMI is not included in this primary descriptive contrast: whether to adjust
+for adiposity depends on the intended estimand. Neither contrast identifies a causal
+diabetes effect, and residual confounding remains possible.
 
 # DAVID functional enrichment (Part III)
 
@@ -503,7 +667,17 @@ Plus 2 Array* population (the array used here, so the background is the genes me
 this platform), categories KEGG_PATHWAY and GOTERM_BP_DIRECT, default chart thresholds
 (Count >= 2, EASE p <= 0.1). Probe sets annotated with several symbols (`A///B`) were split
 into separate symbols before upload. DAVID is a web tool, so its output is stored unchanged in
-`data/david/` and read back here; FDR is DAVID's Benjamini-Hochberg-type FDR column.
+`data/david/` and read back here. DAVID's `Benjamini` column is the ordinary BH
+adjustment; its `FDR` column is the adaptive linear step-up adjustment described by
+Benjamini and Hochberg (2000). The reported enrichment threshold uses the latter.
+The platform background is appropriate to the supplied metadata; a separately justified
+analysis could instead use the actual tested/mappable universe. Multi-symbol features
+remain ambiguous measurements even after splitting symbols for annotation.
+
+**Cache validity:** this document does not query DAVID automatically. Frozen normalized
+input lists are stored with the imported tables. A render must stop if the newly generated
+lists differ; changing a threshold, clustering result, or gene selection then requires a
+new DAVID run and a coordinated update of the frozen lists and results.
 
 ```{r export}
 up   <- age_tab$gene[age_tab$gene %in% age_genes & age_tab$r_pearson > 0]
@@ -523,6 +697,28 @@ c(age_up = length(up), age_down = length(down), robust = length(robust))
 ```
 
 ```{r david}
+normalize_david_symbols <- function(x) {
+  y <- toupper(trimws(unlist(strsplit(x, "///", fixed = TRUE))))
+  unique(y[nzchar(y)])
+}
+check_david_inputs <- function(current, frozen) {
+  if (!setequal(names(current), names(frozen)))
+    stop("DAVID list names changed; rerun DAVID and update its frozen inputs/results.")
+  changed <- names(current)[!vapply(names(current), function(n)
+    setequal(current[[n]], frozen[[n]]), logical(1))]
+  if (length(changed)) stop("Stale DAVID results for: ", paste(changed, collapse = ", "),
+    ". Rerun DAVID and update its frozen inputs/results before rendering.")
+  invisible(TRUE)
+}
+david_list_names <- c("age_down", "age_up",
+  paste0("cluster", levels(ph$km_ns), "_up"), "SI_top200")
+david_current_symbols <- setNames(lapply(david_list_names, function(n)
+  normalize_david_symbols(readLines(paste0("results/DAVID_", n, ".txt")))),
+  david_list_names)
+david_frozen_names <- read.delim("data/david/DAVID_run_info.tsv")$List
+david_frozen_symbols <- setNames(lapply(david_frozen_names, function(n)
+  readLines(paste0("data/david/input_symbols/", n, ".txt"))), david_frozen_names)
+check_david_inputs(david_current_symbols, david_frozen_symbols)
 dv <- read.delim("data/david/DAVID_chart_results.tsv", check.names = FALSE)
 dinfo <- read.delim("data/david/DAVID_run_info.tsv")
 lists <- dinfo$List
@@ -541,93 +737,112 @@ top$fold <- round(top$`Fold Enrichment`, 1)
 top$p <- signif(top$PValue, 2); top$FDR <- signif(top$FDR, 2)
 knitr::kable(top[, c("List", "Category", "Term", "Count", "fold", "p", "FDR")], row.names = FALSE,
              caption = "Top 3 KEGG and top 3 GO-BP terms per list (DAVID EASE p; FDR < 0.05 only in age_down).")
-sig <- dv[dv$FDR < 0.05, c("Category", "Term", "Count", "Genes", "FDR")]
-sig$FDR <- signif(sig$FDR, 2)
-knitr::kable(sig, row.names = FALSE,
+david_sig_terms <- dv[dv$FDR < 0.05,
+  c("List", "Category", "Term", "Count", "Genes", "FDR")]
+david_sig_terms$FDR <- signif(david_sig_terms$FDR, 2)
+knitr::kable(david_sig_terms[, setdiff(names(david_sig_terms), "List")],
+             row.names = FALSE,
              caption = "All DAVID terms with FDR < 0.05 (age_down list) and the genes that drive them.")
 ```
 
-**Interpretation.** Only the age-decreasing list gives terms that survive FDR < 0.05, and they
-form one coherent theme: mitochondrial energy metabolism. KEGG carbon metabolism, lipoic acid
+Both the ordinary BH and adaptive-FDR columns identify `r nrow(david_sig_terms)` terms
+below 0.05 in this saved result; all are in the age-down list. This agreement does not make
+the two correction methods identical.
+
+**Interpretation.** Only the age-decreasing list gives terms that survive adaptive FDR < 0.05,
+and several overlapping terms describe mitochondrial energy metabolism. KEGG carbon metabolism, lipoic acid
 metabolism and the citrate (TCA) cycle, and GO-BP tricarboxylic acid cycle, malate-aspartate
 shuttle and mitochondrial fission are all enriched, driven by a small core of genes (DLAT and
 PDHB of pyruvate dehydrogenase, MDH2, GOT1, GCSH, L2HGDH, SLC25A12, and the fission genes MFF,
-MUL1 and MTFR1L). This is the "mitochondrial dysfunction" hallmark of aging and supports the
-mitochondrial part of H3, but not its extracellular-matrix or inflammation parts, which are not
-significantly enriched in either age list. The genes increasing with age show only a nominal mRNA-splicing
+MUL1 and MTFR1L). This is an exploratory functional theme relevant to the mitochondrial
+hallmark of aging; expression-based over-representation does not demonstrate mitochondrial
+dysfunction or an age-specific mechanism. Extracellular-matrix and inflammation terms are
+not significant in these selected lists, which does not establish absence of those processes. The genes increasing with age show only a nominal mRNA-splicing
 signal (FDR about 0.96). The two cluster marker lists give only nominal terms (cluster 1:
 growth-factor receptor signaling through PDGFRB, FGFR2 and VEGFA; cluster 2: Polycomb
-repressive complex, splicing and endocytosis, best FDR = 0.09), which matches the weak cluster
-structure (silhouette about 0.02). The SI list has no pathway-level signal, so the SRF result
+repressive complex, splicing and endocytosis, best FDR = 0.09). These are exploratory
+descriptions of expression-defined clusters, not independent validation of the clusters. The SI list has no pathway-level signal, so the SRF result
 above rests on the targeted gene tests, not on DAVID.
 
 # Discussion
 
-**Main result: the muscle transcriptome has little strong, unsupervised structure.** The
-heatmap of the 1,000 most variable genes shows no clear sample blocks, average silhouette widths
-are about 0.02 for every k from 2 to 6 (values near 0 mean no real cluster separation), and
-k-means and hierarchical clustering only partly agree (ARI = `r round(ari(ph$km_all, ph$hc_all), 2)`).
-The best k-means split (k = 2) is not enriched for sex, group, diabetes, or age after FDR
-correction; the strongest nominal signal is insulin sensitivity (SI, p = `r en$p_all[en$phenotype=="SI"]`)
-with BMI and fasting insulin close behind. H1 is therefore only weakly supported: whatever
-separates the clusters is related to insulin resistance / adiposity rather than to the
-recorded diagnostic groups.
+**Unsupervised structure and H1.** Under the chosen feature selection, scaling, distance,
+and clustering methods, separation is weak: final silhouette widths are
+`r paste(round(final_silhouette, 3), collapse = " and ")`, and k-means/hierarchical ARI is
+`r round(ari(ph$km_all, ph$hc_all), 2)`. Selecting the best k among 2--6 does not prove
+that discrete biological subgroups exist. Cluster enrichment for SI is nominal
+(p = `r en$p_all[en$phenotype == "SI"]`, q = `r en$q_all[en$phenotype == "SI"]`);
+no tested phenotype survives within-clustering BH q < 0.05. H1 is not clearly supported.
+The SI/BMI/insulin trends are hypotheses for follow-up, not established drivers of the
+partition. Cluster-marker rankings use the same expression data that defined the clusters,
+so they describe those clusters rather than independently validate them.
 
-**Unexpected finding 1: sex is not the dominant axis (H2 rejected).** Only `r length(sex_genes)`
-genes differ strongly by sex, almost all on the X/Y chromosomes (XIST, TSIX, RPS4Y1, DDX3Y,
-KDM5D, UTY, USP9Y, ZFY, EIF1AY), plus a few autosomal adipose-related genes (LEP, ADH1B, CD24),
-which probably reflect sex differences in intramuscular fat. With ~22,000 genes these 19 genes
-contribute almost nothing to PCA or clustering, so removing them changed neither result. Men and
-women do not form distinct clusters.
+**Sex and H2.** The `r length(sex_genes)` features meeting the chosen sex-effect thresholds
+account for `r round(100 * sex_variance_fraction, 2)`% of the sum of feature variances.
+Removing them changes the global results modestly, and the selected clusters do not show
+an FDR-significant sex association. H2 is not supported by this analysis. This is not
+evidence that sex has no expression effects or that a small number of genes cannot dominate
+another dataset; the variance contribution and the actual PCA/clustering results matter.
 
-**Unexpected finding 2: data-quality problems.** Two of 50 samples disagree with their reported
-sex (P25 looks male; N1 expresses both XIST and Y genes and also has an implausible WHR), and two
-samples (`r paste(outl, collapse = ", ")`) are global outliers that drive the leading PCs. In the
-full PCA, PC1 explains only `r round(ve[1], 1)`% of the variance and its top loadings (ribosomal,
-hemoglobin, heat-shock genes) look like tissue-composition or RNA-quality effects rather than
-biology. After removing these samples and scaling genes, PC2 becomes associated with SI
-(p = `r pc_assoc(pcd_s)["si", "PC2"]`) and fasting insulin, which matches the clustering result.
+**QC and PCA interpretation.** N1 and P25 are sex-marker discrepancy flags; P1 and D10 are
+lower-correlation flags. Their causes remain unverified. Main analyses retain all samples
+and their recorded labels. Correlation 0.874 is a dataset-specific diagnostic, not evidence
+that the arrays are noisier than RNA-seq. Loadings may suggest tissue composition or sample
+quality hypotheses, but these explanations have not been established by independent QC.
+The matched 50/46-sample PCA pair fixes the feature selection and scaling rule. The nominal
+PC2--SI association after exclusions has within-PCA q =
+`r fmt_q(pc2_sensitivity$q_within[pc2_sensitivity$phenotype == "si"])`;
+it should not be promoted to a significant result after screening multiple PCs/phenotypes.
 
-**Age-associated genes (H3, H4).** No gene passes FDR < 0.05 for age (the best q is about 0.05),
-which is expected with n = 50 and a 21 to 67-year age range, so the top 100 genes by p-value are
-used as an exploratory set. Their direction is informative: many of the strongest
-age-*decreasing* genes encode mitochondrial and energy-metabolism proteins (MFF, mitochondrial
-fission; DLAT, pyruvate dehydrogenase; MDH2, TCA cycle; ATP5F1, ATP synthase; MRPL15,
-mitochondrial ribosome), which fits the "mitochondrial dysfunction" hallmark of aging. However,
-the correlations weaken in the 40 non-diabetic subjects and only `r length(robust)` gene
-(`r paste(robust, collapse = ", ")`) remains significant after adjusting for sex and diabetes.
-Because the T2D group is about 12 years older, part of the apparent age signature is a diabetes
-signature, so H4 is supported. DAVID confirms that the mitochondrial theme is statistically
-enriched in the age-down list (KEGG carbon metabolism FDR = 0.012, GO-BP TCA cycle
-FDR = 0.012), but because the input list is exploratory and confounded with diabetes, this
-shows *where* the age/diabetes signal concentrates rather than proving an age-only effect.
+**Age associations, H3, and H4.** Pearson testing yields no 5%-FDR features, but this does
+not describe all age analyses: UNC13C has Spearman q =
+`r fmt_q(age_tab$q_spearman[match("UNC13C", age_tab$gene)])` and adjusted-model q =
+`r fmt_q(age_tab$q_adj[match("UNC13C", age_tab$gene)])` in the full sample. With the four
+flags excluded, PLAG1 becomes the only adjusted-model feature below 5% FDR
+(q = `r fmt_q(age_sensitivity$q[match("PLAG1", age_sensitivity$gene)])`), while UNC13C
+rises to q = `r fmt_q(age_sensitivity$q[match("UNC13C", age_sensitivity$gene)])`.
+The identity of the significant feature is therefore sensitive to sample inclusion.
+The top-100 Pearson list remains explicitly exploratory. Its age-decreasing features are
+enriched for several overlapping mitochondrial/metabolic terms, a functional theme
+consistent with part of H3, but not proof of impaired function or causal aging mechanisms.
+The T2D group is older and the adjusted/subgroup analyses alter the evidence, supporting
+concern about confounding in H4. They do not determine how much of the association is
+caused by age, diabetes, adiposity, or other correlated factors. The non-diabetic subset
+overlaps the full cohort and is not independent replication.
 
-**Reproduction of Jin et al.** SRF and its co-activator MKL1 are negatively correlated with
-insulin sensitivity (SRF r = `r round(si_cor$r[si_cor$gene=="SRF"], 2)`, MKL1
-r = `r round(si_cor$r[si_cor$gene=="MKL1"], 2)`), and SRF and the SRF targets VCL and CNN2 are
-higher in T2D than in FH- subjects (nominal p < 0.05). This agrees with the paper's conclusion
-that higher SRF activity marks insulin resistance, although none of these survive genome-wide
-FDR on their own.
+**Relationship to Jin et al.** SRF and MKL1 expression have nominal negative associations
+with SI in this dataset. Some selected target genes also have nominal unadjusted T2D--FH-
+differences. These checks reuse the original cohort and do not reproduce the paper's
+SRF-target gene-set analysis or its animal/cell perturbations. SRF/MKL1 mRNA abundance
+does not directly measure SRF transcriptional activity. The appropriate claim is partial
+consistency of expression directions, not independent replication or a verified mechanism.
+The unadjusted disease comparison is susceptible to age/sex/adiposity confounding;
+the additional age/sex-adjusted contrast is descriptive and does not remove all such risks.
 
-**Approaches that did not work, and why.** (1) Clustering on all variable genes produced
-clusters with silhouette near 0, because between-subject biological differences are small
-compared to array noise (median inter-sample r = `r round(median(medcor), 3)`). (2) Removing sex
-genes did not reveal hidden structure, because sex was never the main driver. (3) Strict FDR
-filtering gave no age genes, so a rank-based list had to be used, and pathway results from it
-should be called exploratory. A better design would model age and glycemic status jointly,
-use a larger cohort, or use gene-set methods (GSEA) that pool weak signals across many genes.
+**Limitations and unsuccessful approaches.** Weak cluster separation, no Pearson-FDR age
+features, and sensitivity of the adjusted age signal are substantive results, not reasons
+to relax a confirmatory threshold. The rank-based top-100 list is a separately labeled
+exploratory analysis. Small groups, a cross-sectional age range of 21--67 years,
+age--diabetes imbalance, missing clinical measures, ambiguous gene annotations, and
+unverified QC flags limit interpretation. No causal effects or general aging biomarker
+claims are established. A stronger follow-up could use explicitly justified covariates,
+moderated microarray models such as limma, ranked gene-set tests, and independent data.
 
-**Limitations.** Single time point, small groups (10 T2D), confounding between age and
-diabetes, missing OGTT data for all T2D subjects, and two suspicious sample records.
+# AI usage and reproducibility
 
-# AI usage
+Claude (Anthropic) assisted with the initial analysis code and narrative, including the
+stored DAVID website queries. Codex (OpenAI) subsequently assisted with statistical review,
+missing-value and multiplicity corrections, sample-sensitivity analyses, interpretation,
+and validation. These are AI-assisted contributions; the author is responsible for the
+final review and submission. This statement does not assert independent human verification
+of every AI-generated interpretation.
 
-Claude (Anthropic) was used to draft the analysis plan, write the R code in this R Markdown file,
-and draft the text. The analysis choices (gene filtering, sex-gene removal, confounder
-adjustment, outlier handling) and all interpretations were reviewed and checked against the
-output by the author. Code was run in a GitHub Codespace / GitHub Actions runner (rocker/verse container).
-The DAVID queries were submitted through the DAVID website by Claude using browser automation;
-the returned tables are stored unchanged in `data/david/`.
+The earlier report was run in GitHub Codespaces/Actions with rocker/verse. This revision
+was tested on the Boston University SCC through VS Code using R 4.4.3, Pandoc 2.5, and
+TeX Live 2023. Full session information for the present render follows. Saved DAVID results
+are imported with an input-membership guard; they are not automatically regenerated.
+Run the entire document in a fresh R process before submission. Individual chunks share
+state in the interactive console and can otherwise use stale objects or RNG state.
 
 # References
 
@@ -638,7 +853,14 @@ the returned tables are stored unchanged in `data/david/`.
    2013;153(6):1194-1217.
 3. Lu T, Aron L, Zullo J, et al. REST and stress resistance in ageing and Alzheimer's disease.
    *Nature.* 2014;507:448-454 (GDS5204, extra-credit brain dataset, not analyzed here).
+4. GEO, GSE25462 and GPL570 sample metadata, accessed October 22, 2026:
+   <https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE25462>.
+5. DAVID Functional Annotation Tool documentation, multiple-testing definitions and
+   enrichment background, accessed October 22, 2026:
+   <https://davidbioinformatics.nih.gov/documentation/tools/tech-gene-enrichment.html>.
+6. R `cor.test` documentation (Spearman asymptotic approximation):
+   <https://stat.ethz.ch/R-manual/R-devel/library/stats/html/cor.test.html>.
 
 ```{r session, echo=FALSE}
-sessionInfo()$R.version$version.string
+sessionInfo()
 ```

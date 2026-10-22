@@ -1,7 +1,7 @@
 name: Render HW3 report
 on:
   push:
-    paths: ["HW3.Rmd", "data/**", ".github/workflows/render.yml"]
+    paths: ["HW3.Rmd", "data/**", "scripts/**", ".github/workflows/render.yml"]
   workflow_dispatch:
 permissions:
   contents: write
@@ -15,20 +15,28 @@ jobs:
         run: Rscript -e 'install.packages(c("pheatmap","ggrepel","cluster"), repos="https://cloud.r-project.org")'
       - name: Install LaTeX packages
         run: |
-          for p in booktabs footnotehyper mdwtools framed xurl bookmark upquote microtype parskip fancyvrb etoolbox lm geometry hyperref amsmath selnolig; do
+          for p in booktabs footnotehyper mdwtools framed xurl bookmark upquote microtype parskip fancyvrb fvextra etoolbox lm geometry hyperref amsmath selnolig; do
             tlmgr install "$p" || echo "skip $p"
           done
-      - name: Render R Markdown to PDF
-        run: Rscript -e 'rmarkdown::render("HW3.Rmd", output_dir = "output")' && cp -r results output/
+      - name: Render and validate R Markdown
+        run: Rscript --vanilla scripts/render_validate.R
       - uses: actions/upload-artifact@v5
         with:
           name: HW3-report
-          path: output/
-      - name: Commit rendered PDF
+          path: |
+            output/HW3.pdf
+            output/results/
+            output/validation.txt
+            output/sessionInfo.txt
+      - name: Commit validated outputs
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config user.name "github-actions[bot]"
           git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
-          git add output
-          git commit -m "Render HW3.pdf [skip ci]" || echo "no changes"
-          git push
+          git add output/HW3.pdf output/results output/validation.txt output/sessionInfo.txt
+          if git diff --cached --quiet; then
+            echo "No output changes"
+          else
+            git commit -m "Render and validate HW3.pdf [skip ci]"
+            git push
+          fi

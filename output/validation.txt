@@ -1,0 +1,29 @@
+PASS	50 aligned samples and 22189 finite expression features
+PASS	T2D SI mean uses 8 observations and equals 1.815
+PASS	age counts retain numeric type after DAVID execution
+PASS	full-sample 5 percent adjusted age hit is UNC13C
+PASS	46-sample 5 percent adjusted age hit is PLAG1
+PASS	PLAG1 q is about 0.013; UNC13C no longer passes 5 percent
+PASS	OLS matches lm for UNC13C
+PASS	Spearman matches cor.test for UNC13C
+PASS	OLS matches lm for PLAG1
+PASS	Spearman matches cor.test for PLAG1
+PASS	OLS matches lm for MFF
+PASS	Spearman matches cor.test for MFF
+PASS	OLS matches lm for SRF
+PASS	Spearman matches cor.test for SRF
+PASS	sensitivity OLS matches lm for PLAG1
+PASS	sensitivity OLS matches lm for UNC13C
+PASS	four complete PCA test families contain 42 tests each
+PASS	nominal PC2-SI association is not significant after 42-test BH
+PASS	matched PCA pair fixes features and scaling rule
+PASS	frozen DAVID lists match the actual current inputs
+PASS	DAVID cache guard rejects altered membership
+PASS	DAVID cache guard rejects missing or extra lists
+PASS	adaptive and ordinary BH identify the same eight saved terms
+PASS	source and supplied data were not changed by rendering
+PASS	a nonempty PDF was generated
+PASS	result tables copied beside the PDF
+PLAG1_adjusted_q_46	0.0131344284032
+UNC13C_adjusted_q_46	0.0893825550491
+R_version	R version 4.4.3 (2025-02-28)
