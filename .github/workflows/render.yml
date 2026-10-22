@@ -15,8 +15,9 @@ jobs:
         run: Rscript -e 'install.packages(c("pheatmap","ggrepel","cluster"), repos="https://cloud.r-project.org")'
       - name: Install LaTeX packages
         run: |
-          for p in booktabs footnotehyper mdwtools framed xurl bookmark upquote microtype parskip fancyvrb fvextra etoolbox lm geometry hyperref amsmath selnolig; do
-            tlmgr install "$p" || echo "skip $p"
+          tlmgr install booktabs footnotehyper mdwtools framed xurl bookmark upquote microtype parskip fancyvrb fvextra lineno etoolbox lm geometry hyperref amsmath selnolig
+          for style in fvextra.sty lineno.sty; do
+            kpsewhich "$style"
           done
       - name: Render and validate R Markdown
         run: Rscript --vanilla scripts/render_validate.R
